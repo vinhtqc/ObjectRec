@@ -45,6 +45,7 @@ import org.tensorflow.lite.support.tensorbuffer.TensorBuffer;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Arrays;
 import java.util.List;
 import androidx.camera.view.PreviewView;
 
@@ -59,7 +60,7 @@ public class MainActivity extends AppCompatActivity {
     private Interpreter tflite;
     private int imageSizeX;
     private int imageSizeY;
-    private List<String> labels;
+    private final List<String> labels= Arrays.asList("A","B","C","D");
     private Handler handler;
     private HandlerThread handlerThread;
 
@@ -80,8 +81,9 @@ public class MainActivity extends AppCompatActivity {
         handlerThread = new HandlerThread("videoThread");
         handlerThread.start();
         handler = new Handler(handlerThread.getLooper());
-
-        try {
+        imageSizeY = 16;
+        imageSizeX = 16;
+/*        try {
             tflite = new Interpreter(FileUtil.loadMappedFile(this, "your_model.tflite")); // Replace with your model file name
             labels = FileUtil.loadLabels(this, "your_labels.txt"); // Replace with your labels file name
 
@@ -89,9 +91,13 @@ public class MainActivity extends AppCompatActivity {
             imageSizeY = inputShape[1];
             imageSizeX = inputShape[2];
 
+
+
         } catch (IOException e) {
             e.printStackTrace();
         }
+
+        */
     }
 
     private void startCamera() {
@@ -158,18 +164,25 @@ public class MainActivity extends AppCompatActivity {
                 .add(new ResizeOp(imageSizeY, imageSizeX, ResizeOp.ResizeMethod.BILINEAR))
                 .add(new NormalizeOp(0, 255))
                 .build();
-
+/*
         TensorImage processedImageBuffer = imageProcessor.process(inputImageBuffer);
 
         TensorBuffer outputFeature0 = TensorBuffer.createFixedSize(new int[]{1, 10, 4}, DataType.FLOAT32);
         TensorBuffer outputFeature1 = TensorBuffer.createFixedSize(new int[]{1, 10}, DataType.FLOAT32);
         TensorBuffer outputFeature2 = TensorBuffer.createFixedSize(new int[]{1, 10}, DataType.FLOAT32);
 
+
         tflite.run(processedImageBuffer.getBuffer(), new Object[]{outputFeature0.getBuffer().rewind(), outputFeature1.getBuffer().rewind(), outputFeature2.getBuffer().rewind()});
 
         float[] locations = outputFeature0.getFloatArray(); // Corrected line.
         float[] classes = outputFeature1.getFloatArray();
         float[] scores = outputFeature2.getFloatArray();
+        */
+
+        float[] locations = new float[]{0.1f, 0.2f, 0.8f, 0.9f, 0.5f, 0.6f, 0.7f, 0.8f
+                , 0.9f, 1.0f, 1.1f, 1.2f, 0, 0, 0, 0};
+        float[] classes = new float[]{0, 1, 2, 3};
+        float[] scores = new float[]{0.6f, 0.2f, 0.3f, 0.1f};
 
         Bitmap mutableBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true);
         Canvas canvas = new Canvas(mutableBitmap);
