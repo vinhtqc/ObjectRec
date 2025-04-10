@@ -69,6 +69,7 @@ public class MainActivity extends AppCompatActivity {
     private List<String> labels;
     private Handler handler;
     private HandlerThread handlerThread;
+    private int imageCnt=0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -112,33 +113,37 @@ public class MainActivity extends AppCompatActivity {
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
 
         cameraProviderFuture.addListener(() -> {
-            try {
-                ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
-                Preview preview = new Preview.Builder().build();
-                CameraSelector cameraSelector = new CameraSelector.Builder()
-                        .requireLensFacing(CameraSelector.LENS_FACING_BACK).build();
 
-                preview.setSurfaceProvider(previewView.getSurfaceProvider());
+                try {
 
-                ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
-                        .setTargetResolution(new Size(imageSizeX, imageSizeY))
-                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                        .build();
 
-                imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(this), imageProxy -> {
-                    Bitmap bitmap = toBitmap(imageProxy);
-                    if (bitmap != null) {
-                        handler.post(() -> runObjectDetection(bitmap));
-                    }
-                    imageProxy.close();
-                });
+                    ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
+                    Preview preview = new Preview.Builder().build();
+                    CameraSelector cameraSelector = new CameraSelector.Builder()
+                            .requireLensFacing(CameraSelector.LENS_FACING_BACK).build();
 
-                cameraProvider.unbindAll();
-                cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageAnalysis);
+                    preview.setSurfaceProvider(previewView.getSurfaceProvider());
 
-            } catch (Exception e) {
-                Log.e(TAG, "Use case binding failed", e);
-            }
+                    ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
+                            .setTargetResolution(new Size(imageSizeX, imageSizeY))
+                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                            .build();
+
+                    imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(this), imageProxy -> {
+                        Bitmap bitmap = toBitmap(imageProxy);
+                        if (bitmap != null) {
+                            handler.post(() -> runObjectDetection(bitmap));
+                        }
+                        imageProxy.close();
+                    });
+
+                    cameraProvider.unbindAll();
+                    cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageAnalysis);
+
+                } catch (Exception e) {
+                    Log.e(TAG, "Use case binding failed", e);
+                }
+
         }, ContextCompat.getMainExecutor(this));
     }
 
@@ -223,28 +228,32 @@ public class MainActivity extends AppCompatActivity {
 
 
     public void runObjectDetection(Bitmap bitmap) {
-        Bitmap resizedBitmap = Bitmap.createScaledBitmap(bitmap, imageSizeX, imageSizeY, true);
-        TensorImage inputImageBuffer = TensorImage.fromBitmap(resizedBitmap);
+        imageCnt++;
+        if (imageCnt>10) {
+            imageCnt = 0;
+            Bitmap resizedBitmap = Bitmap.createScaledBitmap(bitmap, imageSizeX, imageSizeY, true);
+            TensorImage inputImageBuffer = TensorImage.fromBitmap(resizedBitmap);
 
-        ImageProcessor imageProcessor = new ImageProcessor.Builder()
-                .add(new ResizeOp(imageSizeY, imageSizeX, ResizeOp.ResizeMethod.BILINEAR))
-                .add(new NormalizeOp(0f, 255f)) // Assuming your model expects inputs in [0, 1] or [-1, 1], adjust accordingly
-                .build();
+            ImageProcessor imageProcessor = new ImageProcessor.Builder()
+                    .add(new ResizeOp(imageSizeY, imageSizeX, ResizeOp.ResizeMethod.BILINEAR))
+                    .add(new NormalizeOp(0f, 255f)) // Assuming your model expects inputs in [0, 1] or [-1, 1], adjust accordingly
+                    .build();
 
-        TensorImage processedImageBuffer = imageProcessor.process(inputImageBuffer);
+            TensorImage processedImageBuffer = imageProcessor.process(inputImageBuffer);
 
-        // Output tensor shape for YOLOv8 might vary. Common shape: [1, num_detections, 4 + num_classes]
-        int[] outputShape = tflite.getOutputTensor(0).shape();
-        TensorBuffer outputFeature0 = TensorBuffer.createFixedSize(outputShape, DataType.FLOAT32);
+            // Output tensor shape for YOLOv8 might vary. Common shape: [1, num_detections, 4 + num_classes]
+            int[] outputShape = tflite.getOutputTensor(0).shape();
+            TensorBuffer outputFeature0 = TensorBuffer.createFixedSize(outputShape, DataType.FLOAT32);
 
-        tflite.run(processedImageBuffer.getBuffer(), outputFeature0.getBuffer().rewind());
+            tflite.run(processedImageBuffer.getBuffer(), outputFeature0.getBuffer().rewind());
 
-        float[] rawDetections = outputFeature0.getFloatArray();
-        List<Recognition> recognitions = processRawDetections(rawDetections, bitmap.getWidth(), bitmap.getHeight());
-        List<Recognition> finalRecognitions= nonMaxSuppression(recognitions);
+            float[] rawDetections = outputFeature0.getFloatArray();
+            List<Recognition> recognitions = processRawDetections(rawDetections, bitmap.getWidth(), bitmap.getHeight());
+            List<Recognition> finalRecognitions = nonMaxSuppression(recognitions);
 
-        runOnUiThread(() -> imageView.setImageBitmap(drawDetections(bitmap, finalRecognitions)));
-        //runOnUiThread(() -> previewView.setImageBitmap(drawDetections(bitmap, finalRecognitions)));
+            runOnUiThread(() -> imageView.setImageBitmap(drawDetections(bitmap, finalRecognitions)));
+            //runOnUiThread(() -> previewView.setImageBitmap(drawDetections(bitmap, finalRecognitions)));
+        }
     }
 
     private List<Recognition> processRawDetections(float[] rawDetections, int imageWidth, int imageHeight) {
