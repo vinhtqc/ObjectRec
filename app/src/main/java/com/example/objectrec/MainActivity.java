@@ -3,19 +3,24 @@ package com.example.objectrec;
 import android.Manifest;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.RectF;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
 import android.util.Size;
+import android.view.Display;
+import android.view.OrientationEventListener;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.widget.ImageView;
 import android.widget.Toast;
 
@@ -50,8 +55,13 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import androidx.camera.view.PreviewView;
+import androidx.camera.core.CameraInfo;
 
 public class MainActivity extends AppCompatActivity {
+
+    final private int MYDEBUG=0;
+
+    final private int DROP_FRAME_COUNT = 5;
 
     private PreviewView previewView;
 
@@ -70,7 +80,9 @@ public class MainActivity extends AppCompatActivity {
     private Handler handler;
     private HandlerThread handlerThread;
     private int imageCnt=0;
-
+    private Bitmap gbitmap;
+    private int cameraOrientation = Surface.ROTATION_0;
+    private OrientationEventListener orientationEventListener;
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -97,16 +109,17 @@ public class MainActivity extends AppCompatActivity {
             numClasses = tflite.getOutputTensor(0).shape()[1] - 4; // Adjust based on your model's output
 
             int[] inputShape = tflite.getInputTensor(0).shape();
-            imageSizeY = inputShape[1];
-            imageSizeX = inputShape[2];
+            imageSizeY = inputShape[2];
+            imageSizeX = inputShape[1];
 
-
-
+            if (MYDEBUG==1) {
+                Bitmap bm = BitmapFactory.decodeResource(getResources(), R.drawable.fruit);
+                gbitmap = Bitmap.createScaledBitmap(bm, imageSizeX, imageSizeY, true);
+                imageView.setImageBitmap(gbitmap);
+            }
         } catch (IOException e) {
             e.printStackTrace();
         }
-
-
     }
 
     private void startCamera() {
@@ -115,12 +128,14 @@ public class MainActivity extends AppCompatActivity {
         cameraProviderFuture.addListener(() -> {
 
                 try {
-
-
                     ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
                     Preview preview = new Preview.Builder().build();
                     CameraSelector cameraSelector = new CameraSelector.Builder()
                             .requireLensFacing(CameraSelector.LENS_FACING_BACK).build();
+
+                    CameraInfo cameraInfo = cameraProvider.getCameraInfo(cameraSelector);
+                    int sensorOrientation = cameraInfo.getSensorRotationDegrees();
+                    cameraOrientation = getDisplayRotation();
 
                     preview.setSurfaceProvider(previewView.getSurfaceProvider());
 
@@ -129,10 +144,23 @@ public class MainActivity extends AppCompatActivity {
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .build();
 
+
+
                     imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(this), imageProxy -> {
-                        Bitmap bitmap = toBitmap(imageProxy);
-                        if (bitmap != null) {
-                            handler.post(() -> runObjectDetection(bitmap));
+                        if (MYDEBUG==0)
+                        {
+                            // Rotate the detected bitmap based on the camera orientation
+                            Matrix matrix = new Matrix();
+                            cameraOrientation = getDisplayRotation();
+                            matrix.postRotate(cameraOrientation+90);
+
+                            Bitmap bitmap = toBitmap(imageProxy);
+                            gbitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+
+                        }
+
+                        if (gbitmap != null) {
+                            handler.post(() -> runObjectDetection(gbitmap));
                         }
                         imageProxy.close();
                     });
@@ -147,6 +175,31 @@ public class MainActivity extends AppCompatActivity {
         }, ContextCompat.getMainExecutor(this));
     }
 
+    private int getDisplayRotation() {
+        WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        Display display = windowManager.getDefaultDisplay();
+        int rotation = display.getRotation();
+        switch (rotation) {
+            case Surface.ROTATION_0:
+                return 0;
+            case Surface.ROTATION_90:
+                return 90;
+            case Surface.ROTATION_180:
+                return 180;
+            case Surface.ROTATION_270:
+                return 270;
+            default:
+                return 0;
+        }
+    }
+
+    private void rotateImageView(int rotationDegrees) {
+        Matrix matrix = new Matrix();
+        matrix.postRotate(-rotationDegrees, (float) imageView.getWidth() / 2, (float) imageView.getHeight() / 2);
+        imageView.setImageMatrix(matrix);
+        imageView.invalidate();
+    }
+
     private Bitmap toBitmap(ImageProxy image) {
         ByteBuffer yBuffer = image.getPlanes()[0].getBuffer();
         ByteBuffer uBuffer = image.getPlanes()[1].getBuffer();
@@ -157,6 +210,8 @@ public class MainActivity extends AppCompatActivity {
         int vSize = vBuffer.remaining();
 
         byte[] nv21 = new byte[ySize + uSize + vSize];
+
+        //U and V are swapped
         yBuffer.get(nv21, 0, ySize);
         vBuffer.get(nv21, ySize, vSize);
         uBuffer.get(nv21, ySize + vSize, uSize);
@@ -228,14 +283,15 @@ public class MainActivity extends AppCompatActivity {
 
 
     public void runObjectDetection(Bitmap bitmap) {
-        imageCnt++;
-        if (imageCnt>10) {
+        if (imageCnt++>DROP_FRAME_COUNT) {
             imageCnt = 0;
             Bitmap resizedBitmap = Bitmap.createScaledBitmap(bitmap, imageSizeX, imageSizeY, true);
+
             TensorImage inputImageBuffer = TensorImage.fromBitmap(resizedBitmap);
 
+
             ImageProcessor imageProcessor = new ImageProcessor.Builder()
-                    .add(new ResizeOp(imageSizeY, imageSizeX, ResizeOp.ResizeMethod.BILINEAR))
+                    .add(new ResizeOp(imageSizeX, imageSizeY, ResizeOp.ResizeMethod.BILINEAR))
                     .add(new NormalizeOp(0f, 255f)) // Assuming your model expects inputs in [0, 1] or [-1, 1], adjust accordingly
                     .build();
 
@@ -245,16 +301,94 @@ public class MainActivity extends AppCompatActivity {
             int[] outputShape = tflite.getOutputTensor(0).shape();
             TensorBuffer outputFeature0 = TensorBuffer.createFixedSize(outputShape, DataType.FLOAT32);
 
-            tflite.run(processedImageBuffer.getBuffer(), outputFeature0.getBuffer().rewind());
+            /*         tflite.run(processedImageBuffer.getBuffer(), outputFeature0.getBuffer().rewind());
+                       float[] rawDetections = outputFeature0.getFloatArray();
+                        List<Recognition> recognitions = processRawDetections(rawDetections, bitmap.getWidth(), bitmap.getHeight());
+                        List<Recognition> finalRecognitions = nonMaxSuppression(recognitions);
+             */
 
-            float[] rawDetections = outputFeature0.getFloatArray();
-            List<Recognition> recognitions = processRawDetections(rawDetections, bitmap.getWidth(), bitmap.getHeight());
+
+            float[][][] output= new float[outputShape[0]][outputShape[1]][outputShape[2]];
+
+            tflite.run(processedImageBuffer.getBuffer(), output);
+            List<Recognition> recognitions = processRawDetections(output, bitmap.getWidth(), bitmap.getHeight());
             List<Recognition> finalRecognitions = nonMaxSuppression(recognitions);
 
             runOnUiThread(() -> imageView.setImageBitmap(drawDetections(bitmap, finalRecognitions)));
-            //runOnUiThread(() -> previewView.setImageBitmap(drawDetections(bitmap, finalRecognitions)));
         }
     }
+
+    private List<Recognition> processRawDetections(float[][][] rawDetections, int imageWidth, int imageHeight) {
+        List<Recognition> recognitions = new ArrayList<>();
+        float[][] rawRowCol=rawDetections[0];
+
+        // Assuming the output shape is [1, num_detections, 4 + num_classes]
+        int numDetections = tflite.getOutputTensor(0).shape()[2];
+        int detectionStride = tflite.getOutputTensor(0).shape()[1];
+
+        //numDetections = 10;
+
+        for (int i = 0; i < numDetections; i++) {
+
+            int offset = i * detectionStride;
+
+            // The first 4 elements are likely [centerX, centerY, width, height] normalized to [0, 1]
+            float centerX = rawRowCol[0][i];
+            float centerY = rawRowCol[1][i];
+            float width = rawRowCol[2][i];
+            float height = rawRowCol[3][i];
+
+            // The remaining elements are class probabilities
+            for (int j = 0; j < numClasses; j++) {
+                float confidence = rawRowCol[4+j][i];
+                if (confidence > confidenceThreshold) {
+                    String label = (j < labels.size()) ? labels.get(j) : "unknown";
+
+                    // Scale the bounding box to the original image size
+                    int x = (int) ((centerX - width / 2f) * imageWidth);
+                    int y = (int) ((centerY - height / 2f) * imageHeight);
+                    int w = (int) (width * imageWidth);
+                    int h = (int) (height * imageHeight);
+
+                    RectF location = new RectF(x, y, x + w, y + h);
+                    recognitions.add(new Recognition("" + j, label, confidence, location));
+                }
+            }
+
+
+/*
+            // The remaining elements are class probabilities
+            float maxConfidence = 0;
+            int maxIndex = -1;
+            for (int j = 0; j < numClasses; j++) {
+                float confidence = rawRowCol[4 + j][i];
+                if (confidence > confidenceThreshold) {
+                    if (confidence > maxConfidence) {
+                        maxConfidence = confidence;
+                        maxIndex = j;
+                    }
+                }
+            }
+            if (maxIndex != -1) {
+                String label = (maxIndex < labels.size()) ? labels.get(maxIndex) : "unknown";
+
+                // Scale the bounding box to the original image size
+                int x = (int) ((centerX - width / 2f) * imageWidth);
+                int y = (int) ((centerY - height / 2f) * imageHeight);
+                int w = (int) (width * imageWidth);
+                int h = (int) (height * imageHeight);
+
+                RectF location = new RectF(x, y, x + w, y + h);
+                recognitions.add(new Recognition("" + maxIndex, label, maxConfidence, location));
+
+            }
+
+
+ */
+        }
+        return recognitions;
+    }
+
 
     private List<Recognition> processRawDetections(float[] rawDetections, int imageWidth, int imageHeight) {
         List<Recognition> recognitions = new ArrayList<>();
@@ -263,7 +397,7 @@ public class MainActivity extends AppCompatActivity {
         int numDetections = tflite.getOutputTensor(0).shape()[2];
         int detectionStride = tflite.getOutputTensor(0).shape()[1];
 
-        numDetections = 10;
+        //numDetections = 10;
 
         for (int i = 0; i < numDetections; i++) {
             int offset = i * detectionStride;
