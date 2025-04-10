@@ -45,7 +45,9 @@ import org.tensorflow.lite.support.tensorbuffer.TensorBuffer;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import androidx.camera.view.PreviewView;
 
@@ -60,7 +62,11 @@ public class MainActivity extends AppCompatActivity {
     private Interpreter tflite;
     private int imageSizeX;
     private int imageSizeY;
-    private final List<String> labels= Arrays.asList("A","B","C","D");
+
+    private int numClasses = 80;
+    private float confidenceThreshold = 0.5F;
+    private float nmsIoUThreshold = 0.5F;
+    private List<String> labels;
     private Handler handler;
     private HandlerThread handlerThread;
 
@@ -83,9 +89,11 @@ public class MainActivity extends AppCompatActivity {
         handler = new Handler(handlerThread.getLooper());
         imageSizeY = 16;
         imageSizeX = 16;
-/*        try {
-            tflite = new Interpreter(FileUtil.loadMappedFile(this, "your_model.tflite")); // Replace with your model file name
-            labels = FileUtil.loadLabels(this, "your_labels.txt"); // Replace with your labels file name
+        try {
+
+            tflite = new Interpreter(FileUtil.loadMappedFile(this, "yolov8n.tflite")); // Replace with your model file name
+            labels = FileUtil.loadLabels(this, "labels.txt"); // Replace with your labels file name
+            numClasses = tflite.getOutputTensor(0).shape()[1] - 4; // Adjust based on your model's output
 
             int[] inputShape = tflite.getInputTensor(0).shape();
             imageSizeY = inputShape[1];
@@ -97,7 +105,7 @@ public class MainActivity extends AppCompatActivity {
             e.printStackTrace();
         }
 
-        */
+
     }
 
     private void startCamera() {
@@ -156,7 +164,7 @@ public class MainActivity extends AppCompatActivity {
         return android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
     }
 
-    private void runObjectDetection(Bitmap bitmap) {
+    /*private void runObjectDetection(Bitmap bitmap) {
         Bitmap resizedBitmap = Bitmap.createScaledBitmap(bitmap, imageSizeX, imageSizeY, true);
         TensorImage inputImageBuffer = TensorImage.fromBitmap(resizedBitmap);
 
@@ -164,12 +172,12 @@ public class MainActivity extends AppCompatActivity {
                 .add(new ResizeOp(imageSizeY, imageSizeX, ResizeOp.ResizeMethod.BILINEAR))
                 .add(new NormalizeOp(0, 255))
                 .build();
-/*
+
         TensorImage processedImageBuffer = imageProcessor.process(inputImageBuffer);
 
-        TensorBuffer outputFeature0 = TensorBuffer.createFixedSize(new int[]{1, 10, 4}, DataType.FLOAT32);
-        TensorBuffer outputFeature1 = TensorBuffer.createFixedSize(new int[]{1, 10}, DataType.FLOAT32);
-        TensorBuffer outputFeature2 = TensorBuffer.createFixedSize(new int[]{1, 10}, DataType.FLOAT32);
+        TensorBuffer outputFeature0 = TensorBuffer.createFixedSize(new int[]{1, 80, 4}, DataType.FLOAT32);
+        TensorBuffer outputFeature1 = TensorBuffer.createFixedSize(new int[]{1, 80}, DataType.FLOAT32);
+        TensorBuffer outputFeature2 = TensorBuffer.createFixedSize(new int[]{1, 80}, DataType.FLOAT32);
 
 
         tflite.run(processedImageBuffer.getBuffer(), new Object[]{outputFeature0.getBuffer().rewind(), outputFeature1.getBuffer().rewind(), outputFeature2.getBuffer().rewind()});
@@ -177,12 +185,12 @@ public class MainActivity extends AppCompatActivity {
         float[] locations = outputFeature0.getFloatArray(); // Corrected line.
         float[] classes = outputFeature1.getFloatArray();
         float[] scores = outputFeature2.getFloatArray();
-        */
 
-        float[] locations = new float[]{0.1f, 0.2f, 0.8f, 0.9f, 0.5f, 0.6f, 0.7f, 0.8f
-                , 0.9f, 1.0f, 1.1f, 1.2f, 0, 0, 0, 0};
-        float[] classes = new float[]{0, 1, 2, 3};
-        float[] scores = new float[]{0.6f, 0.2f, 0.3f, 0.1f};
+
+       // float[] locations = new float[]{0.1f, 0.2f, 0.8f, 0.9f, 0.5f, 0.6f, 0.7f, 0.8f
+          //      , 0.9f, 1.0f, 1.1f, 1.2f, 0, 0, 0, 0};
+        //float[] classes = new float[]{0, 1, 2, 3};
+        //float[] scores = new float[]{0.6f, 0.2f, 0.3f, 0.1f};
 
         Bitmap mutableBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true);
         Canvas canvas = new Canvas(mutableBitmap);
@@ -211,7 +219,182 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         runOnUiThread(() -> imageView.setImageBitmap(mutableBitmap));
+    }*/
+
+
+    public void runObjectDetection(Bitmap bitmap) {
+        Bitmap resizedBitmap = Bitmap.createScaledBitmap(bitmap, imageSizeX, imageSizeY, true);
+        TensorImage inputImageBuffer = TensorImage.fromBitmap(resizedBitmap);
+
+        ImageProcessor imageProcessor = new ImageProcessor.Builder()
+                .add(new ResizeOp(imageSizeY, imageSizeX, ResizeOp.ResizeMethod.BILINEAR))
+                .add(new NormalizeOp(0f, 255f)) // Assuming your model expects inputs in [0, 1] or [-1, 1], adjust accordingly
+                .build();
+
+        TensorImage processedImageBuffer = imageProcessor.process(inputImageBuffer);
+
+        // Output tensor shape for YOLOv8 might vary. Common shape: [1, num_detections, 4 + num_classes]
+        int[] outputShape = tflite.getOutputTensor(0).shape();
+        TensorBuffer outputFeature0 = TensorBuffer.createFixedSize(outputShape, DataType.FLOAT32);
+
+        tflite.run(processedImageBuffer.getBuffer(), outputFeature0.getBuffer().rewind());
+
+        float[] rawDetections = outputFeature0.getFloatArray();
+        List<Recognition> recognitions = processRawDetections(rawDetections, bitmap.getWidth(), bitmap.getHeight());
+        List<Recognition> finalRecognitions= nonMaxSuppression(recognitions);
+
+        runOnUiThread(() -> imageView.setImageBitmap(drawDetections(bitmap, finalRecognitions)));
+        //runOnUiThread(() -> previewView.setImageBitmap(drawDetections(bitmap, finalRecognitions)));
     }
+
+    private List<Recognition> processRawDetections(float[] rawDetections, int imageWidth, int imageHeight) {
+        List<Recognition> recognitions = new ArrayList<>();
+
+        // Assuming the output shape is [1, num_detections, 4 + num_classes]
+        int numDetections = tflite.getOutputTensor(0).shape()[2];
+        int detectionStride = tflite.getOutputTensor(0).shape()[1];
+
+        numDetections = 10;
+
+        for (int i = 0; i < numDetections; i++) {
+            int offset = i * detectionStride;
+
+            // The first 4 elements are likely [centerX, centerY, width, height] normalized to [0, 1]
+            float centerX = rawDetections[offset + 0];
+            float centerY = rawDetections[offset + 1];
+            float width = rawDetections[offset + 2];
+            float height = rawDetections[offset + 3];
+
+            // The remaining elements are class probabilities
+            float maxConfidence = 0;
+            int maxIndex = -1;
+            for (int j = 0; j < numClasses; j++) {
+                float confidence = rawDetections[offset + 4 + j];
+                if (confidence > confidenceThreshold) {
+                    if (confidence > maxConfidence) {
+                        maxConfidence = confidence;
+                        maxIndex = j;
+                    }
+                }
+            }
+            if (maxIndex != -1) {
+                String label = (maxIndex < labels.size()) ? labels.get(maxIndex) : "unknown";
+
+                // Scale the bounding box to the original image size
+                int x = (int) ((centerX - width / 2f) * imageWidth);
+                int y = (int) ((centerY - height / 2f) * imageHeight);
+                int w = (int) (width * imageWidth);
+                int h = (int) (height * imageHeight);
+
+                RectF location = new RectF(x, y, x + w, y + h);
+                recognitions.add(new Recognition("" + maxIndex, label, maxConfidence, location));
+
+            }
+        }
+        return recognitions;
+    }
+
+    private List<Recognition> nonMaxSuppression(List<Recognition> recognitions) {
+        List<Recognition> filteredRecognitions = new ArrayList<>();
+        if (recognitions.isEmpty()) return filteredRecognitions;
+
+        // Sort detections by confidence in descending order
+        recognitions.sort(Comparator.comparing(Recognition::getConfidence).reversed());
+
+        boolean[] suppressed = new boolean[recognitions.size()];
+        for (int i = 0; i < recognitions.size(); i++) {
+            if (suppressed[i]) continue;
+            filteredRecognitions.add(recognitions.get(i));
+            for (int j = i + 1; j < recognitions.size(); j++) {
+                if (suppressed[j] || recognitions.get(i).getLabel() != recognitions.get(j).getLabel()) continue;
+                float iou = calculateIoU(recognitions.get(i).getLocation(), recognitions.get(j).getLocation());
+                if (iou > nmsIoUThreshold) {
+                    suppressed[j] = true;
+                }
+            }
+        }
+        return filteredRecognitions;
+    }
+
+    private float calculateIoU(RectF box1, RectF box2) {
+        float intersectionX = Math.max(box1.left, box2.left);
+        float intersectionY = Math.max(box1.top, box2.top);
+        float intersectionRight = Math.min(box1.right, box2.right);
+        float intersectionBottom = Math.min(box1.bottom, box2.bottom);
+
+        float intersectionArea = Math.max(0, intersectionRight - intersectionX) * Math.max(0, intersectionBottom - intersectionY);
+
+        float area1 = (box1.right - box1.left) * (box1.bottom - box1.top);
+        float area2 = (box2.right - box2.left) * (box2.bottom - box2.top);
+
+        return intersectionArea / (area1 + area2 - intersectionArea + 1e-5f); // Adding a small epsilon to avoid division by zero
+    }
+
+    private Bitmap drawDetections(Bitmap bitmap, List<Recognition> recognitions) {
+        Bitmap outputBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true);
+        Canvas canvas = new Canvas(outputBitmap);
+        Paint boxPaint = new Paint();
+        boxPaint.setColor(Color.RED);
+        boxPaint.setStyle(Paint.Style.STROKE);
+        boxPaint.setStrokeWidth(5);
+
+        Paint textPaint = new Paint();
+        textPaint.setColor(Color.WHITE);
+        textPaint.setStyle(Paint.Style.FILL);
+        textPaint.setTextSize(50);
+
+        for (Recognition recognition : recognitions) {
+            RectF location = recognition.getLocation();
+            String label = recognition.getLabel();
+            float confidence = recognition.getConfidence();
+
+            canvas.drawRect(location, boxPaint);
+            String displayText = String.format("%s (%.2f)", label, confidence);
+            canvas.drawText(displayText, location.left, location.top - 10, textPaint);
+        }
+        return outputBitmap;
+    }
+
+    public static class Recognition {
+        private final String id;
+        private final String label;
+        private final Float confidence;
+        private final RectF location;
+
+        public Recognition(final String id, final String label, final Float confidence, final RectF location) {
+            this.id = id;
+            this.label = label;
+            this.confidence = confidence;
+            this.location = location;
+        }
+
+        public String getId() {
+            return id;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+
+        public Float getConfidence() {
+            return confidence;
+        }
+
+        public RectF getLocation() {
+            return location;
+        }
+
+        @Override
+        public String toString() {
+            return "Recognition{" +
+                    "id='" + id + '\'' +
+                    ", label='" + label + '\'' +
+                    ", confidence=" + confidence +
+                    ", location=" + location +
+                    '}';
+        }
+    }
+
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
